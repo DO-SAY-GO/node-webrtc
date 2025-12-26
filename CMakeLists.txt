@@ -2,7 +2,19 @@ cmake_minimum_required(VERSION 3.15)
 cmake_policy(SET CMP0091 NEW)
 cmake_policy(SET CMP0042 NEW)
 
-if (APPLE AND "$ENV{TARGET_ARCH}" STREQUAL "arm64")
+macro(assign_bool var)
+  if (${ARGN})
+    set(${var} ON)
+  else()
+    set(${var} OFF)
+  endif()
+endmacro()
+
+assign_bool(use_custom_libcxx NOT WIN32)
+assign_bool(is_arm32 "y$ENV{TARGET_ARCH}" STREQUAL "yarm")
+assign_bool(is_arm64 "y$ENV{TARGET_ARCH}" STREQUAL "yarm64")
+
+if (APPLE AND ${is_arm64})
   set(CMAKE_OSX_ARCHITECTURES "arm64" CACHE INTERNAL "" FORCE)
 endif()
 
@@ -12,8 +24,6 @@ project(${MODULE})
 include(ExternalProject)
 find_package(Git REQUIRED)
 find_package(Threads REQUIRED)
-find_program(iwyu_path OPTIONAL NAMES include-what-you-use iwyu)
-find_program(clang_tidy_path OPTIONAL NAMES clang-tidy)
 
 # depot_tools
 # -----------------------------------------------------------------------------
@@ -22,7 +32,7 @@ ExternalProject_Add(
   project_depot_tools
 
   GIT_REPOSITORY    https://chromium.googlesource.com/chromium/tools/depot_tools.git
-  GIT_TAG           4eaefabc5dca618fc07ac550fda35ba7a45a38f8
+  GIT_TAG           495b23b39aaba2ca3b55dd27cadc523f1cb17ee6
 
   PREFIX            ${CMAKE_BINARY_DIR}/external/depot_tools/prefix
   TMP_DIR           ${CMAKE_BINARY_DIR}/external/depot_tools/tmp
@@ -140,8 +150,10 @@ set_target_properties(libc++abi PROPERTIES IMPORTED_OBJECTS_DEBUG "${libc++abi_o
 # M91: branch-heads/4472
 # M92: branch-heads/4515
 # M94: branch-heads/4606
-set(WEBRTC_REVISION branch-heads/4606)
+# M98: branch-heads/4758
+set(WEBRTC_REVISION branch-heads/4758)
 
+file(STRINGS nix.gni NIX_GN_GEN_ARGS)
 list(APPEND GN_GEN_ARGS
   rtc_build_examples=false
   rtc_use_x11=false
@@ -149,9 +161,11 @@ list(APPEND GN_GEN_ARGS
   rtc_include_pulse_audio=false
   rtc_include_tests=false
   use_lld=false
+  "target_cpu=\"$ENV{TARGET_ARCH}\""
+  "${NIX_GN_GEN_ARGS}"
 )
 
-if (APPLE)
+if (${use_custom_libcxx})
   list(APPEND GN_GEN_ARGS
     use_custom_libcxx=true
   )
@@ -161,14 +175,8 @@ else()
   )
 endif()
 
-if ("$ENV{TARGET_ARCH}" STREQUAL "arm")
+if (${is_arm32} OR ${is_arm64})
   list(APPEND GN_GEN_ARGS
-    target_cpu="arm"
-    rtc_build_tools=true
-  )
-elseif ("$ENV{TARGET_ARCH}" STREQUAL "arm64")
-  list(APPEND GN_GEN_ARGS
-    target_cpu="arm64"
     rtc_build_tools=true
   )
 else()
@@ -298,19 +306,11 @@ set(catch2_install_dir ${SOURCE_DIR})
 # node-webrtc
 # -----------------------------------------------------------------------------
 
-file(GLOB_RECURSE MODULE_SRC src/*.cc src/*.h)
+file(GLOB_RECURSE MODULE_SRC src/*.cc src/*.hh)
 add_library(${MODULE} SHARED ${MODULE_SRC} ${CMAKE_JS_SRC})
 set_target_properties(${MODULE} PROPERTIES PREFIX "" SUFFIX ".node")
 
-set_property(TARGET ${MODULE} PROPERTY CXX_STANDARD 14)
-
-if(NOT iwyu_path STREQUAL "iwyu_path-NOTFOUND")
-  set_property(TARGET ${MODULE} PROPERTY CXX_INCLUDE_WHAT_YOU_USE ${iwyu_path} -Xiwyu --mapping_file=${CMAKE_SOURCE_DIR}/.iwyu.imp)
-endif()
-
-if(NOT clang_tidy_path STREQUAL "clang_tidy_path-NOTFOUND")
-  set_property(TARGET ${MODULE} PROPERTY CXX_CLANG_TIDY ${clang_tidy_path})
-endif()
+set_property(TARGET ${MODULE} PROPERTY CXX_STANDARD 17)
 
 # NOTE(mroberts): Workaround for
 #
@@ -382,11 +382,11 @@ else()
     -fvisibility=hidden
     -Wall
     -Wextra
+    -Wpedantic
     -Wno-missing-field-initializers
     -Wno-uninitialized
     -Wno-unused-local-typedefs
     -Wno-unused-variable
-    -Wpedantic
     "$<$<CONFIG:Debug>:-g>"
   )
 
@@ -395,7 +395,7 @@ else()
     "$<$<CONFIG:Debug>:-DDEBUG>"
   )
 
-  if (APPLE OR "$ENV{TARGET_ARCH}" STREQUAL "arm" OR "$ENV{TARGET_ARCH}" STREQUAL "arm64")
+  if (${use_custom_libcxx})
     # NOTE(mroberts): Workaround for
     #
     #   https://gitlab.kitware.com/cmake/cmake/issues/15052
@@ -406,11 +406,11 @@ else()
       ${libc++abi_include_dir}
     )
 
-  # NOTE(mroberts): On Arm Linux and macOS, we statically link the same libc++ and
-    # libc++abi libraries that libwebrtc builds against.
+    # We statically link the same libc++ and libc++abi libraries that libwebrtc builds against.
     target_link_libraries(${MODULE} PRIVATE
       libc++
       libc++abi
+      -nostdlib++ # Requires clang, but that's OK, we have nix :)
     )
 
     target_compile_options(${MODULE} PRIVATE
@@ -433,6 +433,7 @@ else()
       -Weverything
       -Wno-c++98-compat
       -Wno-c++98-compat-pedantic
+      -Wno-covered-switch-default
       -Wno-documentation
       -Wno-exit-time-destructors
       -Wno-float-conversion
@@ -458,93 +459,6 @@ else()
 
     target_compile_options(${MODULE} PRIVATE
       -fpermissive
-    )
-
-    if ("$ENV{TARGET_ARCH}" STREQUAL "arm" OR "$ENV{TARGET_ARCH}" STREQUAL "arm64")
-      set(CMAKE_SYSTEM_NAME Linux)
-      set(CMAKE_SYSTEM_PROCESSOR "$ENV{TARGET_ARCH}")
-      set(tools $ENV{ARM_TOOLS_PATH})
-
-      set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
-      set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
-      set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
-      set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
-
-      if ("$ENV{TARGET_ARCH}" STREQUAL "arm")
-        set(CMAKE_SYSROOT ${libwebrtc_source_dir}/src/build/linux/debian_sid_arm-sysroot)
-        target_compile_options(${MODULE} PRIVATE
-          -march=armv7-a
-          -mfloat-abi=hard
-          -mtune=generic-armv7-a
-          -mfpu=neon
-        )
-        set(CMAKE_C_COMPILER ${tools}/bin/arm-linux-gnueabihf-gcc)
-        set(CMAKE_CXX_COMPILER ${tools}/bin/arm-linux-gnueabihf-g++)
-      else()
-        set(CMAKE_SYSROOT ${libwebrtc_source_dir}/src/build/linux/debian_sid_arm64-sysroot)
-        set(CMAKE_C_COMPILER ${tools}/bin/aarch64-linux-gnu-gcc)
-        set(CMAKE_CXX_COMPILER ${tools}/bin/aarch64-linux-gnu-g++)
-      endif()
-    endif()
-  endif()
-endif()
-
-# astyle
-# -----------------------------------------------------------------------------
-
-if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-  list(APPEND ASTYLE_CMAKE_ARGS "-DCMAKE_INSTALL_PREFIX=${CMAKE_BINARY_DIR}")
-
-  ExternalProject_Add(
-    astyle
-    GIT_REPOSITORY      https://github.com/Bareflank/astyle.git
-    GIT_TAG             v1.2
-    GIT_SHALLOW         true
-    CMAKE_ARGS          ${ASTYLE_CMAKE_ARGS}
-    PREFIX              ${CMAKE_BINARY_DIR}/external/astyle/prefix
-    TMP_DIR             ${CMAKE_BINARY_DIR}/external/astyle/tmp
-    STAMP_DIR           ${CMAKE_BINARY_DIR}/external/astyle/stamp
-    DOWNLOAD_DIR        ${CMAKE_BINARY_DIR}/external/astyle/download
-    SOURCE_DIR          ${CMAKE_BINARY_DIR}/external/astyle/src
-    BINARY_DIR          ${CMAKE_BINARY_DIR}/external/astyle/build
-  )
-
-  list(APPEND ASTYLE_ARGS
-    --style=google
-    --lineend=linux
-    --suffix=none
-    --pad-oper
-    --unpad-paren
-    --align-pointer=type
-    --align-reference=type
-    --indent-preproc-define
-    --indent-switches
-    --indent-col1-comments
-    --keep-one-line-statements
-    --keep-one-line-blocks
-    --pad-header
-    --convert-tabs
-    --min-conditional-indent=0
-    --indent=spaces=2
-    --indent-continuation=2
-    --indent-after-parens
-    --close-templates
-    --add-brackets
-    --break-after-logical
-    ${MODULE_SRC}
-  )
-
-  if(NOT WIN32 STREQUAL "1")
-    add_custom_target(
-      format
-      COMMAND ${CMAKE_BINARY_DIR}/bin/astyle ${ASTYLE_ARGS}
-      COMMENT "running astyle"
-    )
-  else()
-    add_custom_target(
-      format
-      COMMAND ${CMAKE_BINARY_DIR}/bin/astyle.exe ${ASTYLE_ARGS}
-      COMMENT "running astyle"
     )
   endif()
 endif()

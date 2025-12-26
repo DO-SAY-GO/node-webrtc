@@ -6,7 +6,7 @@
 [![NPM](https://img.shields.io/npm/v/@roamhq/wrtc.svg)](https://www.npmjs.com/package/@roamhq/wrtc)
 
 node-webrtc is a Node.js Native Addon that provides bindings to [WebRTC
-M94](https://webrtc.googlesource.com/src/+/branch-heads/4606). This project is
+M98](https://webrtc.googlesource.com/src/+/branch-heads/4758). This project is
 aiming for spec-compliance and will eventually be tested using the W3C's
 [web-platform-tests](https://github.com/web-platform-tests/wpt) project. A
 number of [nonstandard APIs](docs/nonstandard-apis.md) for testing are also
@@ -36,12 +36,13 @@ still be able to [build from source](docs/build-from-source.md).
   <thead>
     <tr>
       <td colspan="2" rowspan="2"></td>
-      <th>Linux</th>
+      <th colspan="2">Linux</th>
       <th colspan="2">macOS</th>
       <th>Windows</th>
     </tr>
     <tr>
       <th>x64</th>
+      <th>arm64</th>
       <th>x64</th>
       <th>arm64</th>
       <th>x64</th>
@@ -49,11 +50,20 @@ still be able to [build from source](docs/build-from-source.md).
   </thead>
   <tbody>
     <tr>
-      <th rowspan="1">Node</th>
-      <th>18</th>
+      <th rowspan="2">Node</th>
+      <th>20</th>
       <td align="center">✓</td>
-        <td align="center">✓</td>
-        <td align="center">✓</td>
+      <td align="center">?</td>
+      <td align="center">✓</td>
+      <td align="center">✓</td>
+      <td align="center">✓</td>
+    </tr>
+    <tr>
+      <th>22</th>
+      <td align="center">✓</td>
+      <td align="center">?</td>
+      <td align="center">✓</td>
+      <td align="center">✓</td>
       <td align="center">✓</td>
     </tr>
   </tbody>
